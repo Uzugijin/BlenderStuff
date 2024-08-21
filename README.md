@@ -2,7 +2,7 @@ uzu nodegroup pack contains:
 
 Modifiers:
 
-  Autotools - simple shade smooth and welding
+  Autotools - simple shade smooth and welding/n
   EyeOnVertex - instance an eyeball (halved) on a vertex (group or attribute)
   FlowEdgev2 - Wireframe generator from unconnected vertices
   FollowSurface - Used by a triangle mesh that should have a child object parented by the vertex (triangle) method. This ensures the parented object follows the surface more smoothly.
