@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Triangle Mesh Macros",
-    "version": (2, 0, 0),
+    "version": (2, 2, 0),
     "blender": (5, 00, 0),
     "category": "3D",
     "location": "3D View > Sidebar > Tris",
@@ -16,7 +16,7 @@ class MESH_OT_smart_subdivide_or_poke_or_rotate(bpy.types.Operator):
     - 1 boundary vertex: Extend corner
     - 1 vertex: Triangle fan subdivision
     - 1 edge: Edge subdivision
-    - 2 close parallel edges: Quad cut
+    - Edges: Beauty edge subdivision
     - Face(s): Make face and poke"""  
 
     bl_idname = "mesh.smart_edit_operation"
@@ -58,7 +58,9 @@ class MESH_OT_smart_subdivide_or_poke_or_rotate(bpy.types.Operator):
             for face in list(affected_faces):
                 # Check if face still exists (it might have been split)
                 if face.is_valid:
-                    bmesh.ops.triangulate(bm, faces=[face])
+                    bmesh.ops.triangulate(bm, faces=[face],
+                quad_method='BEAUTY',
+                ngon_method='BEAUTY')
             # Now the two new edges should be selected
             # Find the shared vertex between them
             new_selected_edges = [e for e in bm.edges if e.select]
@@ -82,65 +84,8 @@ class MESH_OT_smart_subdivide_or_poke_or_rotate(bpy.types.Operator):
             bpy.ops.mesh.select_mode(type='VERT')
 
         # MODE 2: Two edges (test if they form a quad-like pair)
-        elif len(selected_edges) == 2 and len(selected_faces) == 0:
-            edge1, edge2 = selected_edges[0], selected_edges[1]
-            
-            # Check if they share a vertex
-            if set(edge1.verts) & set(edge2.verts):
-                self.report({'WARNING'}, "Edges share a vertex - cannot rotate")
-                bm.free()
-                return {'CANCELLED'}
-            
-            # Store vertex positions BEFORE any modifications
-            edge1_verts = {(edge1.verts[0].co.x, edge1.verts[0].co.y, edge1.verts[0].co.z),
-                          (edge1.verts[1].co.x, edge1.verts[1].co.y, edge1.verts[1].co.z)}
-            edge2_verts = {(edge2.verts[0].co.x, edge2.verts[0].co.y, edge2.verts[0].co.z),
-                          (edge2.verts[1].co.x, edge2.verts[1].co.y, edge2.verts[1].co.z)}
-            
-            # Clear selection and select just the two edges
-            bpy.ops.mesh.select_all(action='DESELECT')
-            edge1.select = True
-            edge2.select = True
-            
-            # Run shortest_path_select to select the faces/edges between them
-            try:
-                bpy.ops.mesh.shortest_path_select(
-                    edge_mode='SELECT',
-                    use_face_step=False,
-                    use_topology_distance=True,
-                    use_fill=True
-                )
-            except:
-                self.report({'WARNING'}, "Could not find path between edges")
-                bm.free()
-                return {'CANCELLED'}
-            
-            # Refresh BMesh
-            bm = bmesh.from_edit_mesh(mesh)
-            bm.faces.ensure_lookup_table()
-            
-            # Check how many faces are selected
-            selected_faces_count = len([f for f in bm.faces if f.select])
-            
-            if selected_faces_count != 2:
-                self.report({'WARNING'}, f"Selected edges are too far!")
-                bpy.ops.mesh.select_all(action='DESELECT')
-                edge1.select = True
-                edge2.select = True
-                bm.free()
-                return {'CANCELLED'}
+        elif len(selected_edges) > 1 and len(selected_faces) == 0:
            
-            # Valid! Now reselect ONLY the original two edges
-            bpy.ops.mesh.select_all(action='DESELECT')
-            
-            # Find and select the original edges using stored vertex positions
-            for e in bm.edges:
-                e_verts = {(e.verts[0].co.x, e.verts[0].co.y, e.verts[0].co.z),
-                          (e.verts[1].co.x, e.verts[1].co.y, e.verts[1].co.z)}
-                if e_verts == edge1_verts or e_verts == edge2_verts:
-                    e.select = True
-            
-            # Subdivide with no ngons (tris only)
             bpy.ops.mesh.subdivide(
                 number_cuts=1,
                 smoothness=0,
@@ -148,8 +93,19 @@ class MESH_OT_smart_subdivide_or_poke_or_rotate(bpy.types.Operator):
                 quadcorner='INNERVERT'
             )
             
-            bpy.ops.mesh.edge_rotate(use_ccw=False)
+            bpy.ops.mesh.quads_convert_to_tris(
+                quad_method='BEAUTY', ngon_method='BEAUTY'
+            )
+            
+            bpy.ops.mesh.quads_convert_to_tris(
+                quad_method='BEAUTY', ngon_method='BEAUTY'
+            )
+            
+            bpy.ops.mesh.beautify_fill(angle_limit=3.14159)
+
+            bpy.ops.mesh.select_mode(use_extend=False, use_expand=False, type='VERT')
             bpy.ops.mesh.select_all(action='DESELECT')
+
 
         # MODE 3: Face(s) selected (one or more)
         elif len(selected_faces) >= 1:
@@ -212,8 +168,12 @@ class MESH_OT_smart_subdivide_or_poke_or_rotate(bpy.types.Operator):
                     self.report({'WARNING'}, "Center vertex is original vertex - something wrong")
             else:
                 self.report({'WARNING'}, "Poke operation didn't create new vertices")
+                
+            if original_face_count == 1:
+                bpy.ops.mesh.select_mode(type='FACE')
+            else:
+                bpy.ops.mesh.select_mode(type='VERT')
 
-            bpy.ops.mesh.select_mode(type='VERT')
 
         # MODE 4: Single boundary vertex - extrude and create triangle
         elif len(selected_verts) == 1 and len(selected_edges) == 0 and len(selected_faces) == 0:
@@ -356,9 +316,6 @@ class MESH_OT_smart_subdivide_or_poke_or_rotate(bpy.types.Operator):
             bm.free()
             
             self.report({'INFO'}, "Created two triangles - vertex is ready to move")
-        elif len(selected_edges) > 2 and len(selected_faces) == 0:
-            self.report({'INFO'}, "Only 2 edges should be selected.")
-            return {'FINISHED'}
         else:
             self.report({'INFO'}, "No selection.")
             return {'FINISHED'}
@@ -409,7 +366,7 @@ class MESH_OT_triangulate_preserve_selection(bpy.types.Operator):
             bmesh.ops.triangulate(
                 bm,
                 faces=bm.faces[:],
-                quad_method='FIXED',
+                quad_method='BEAUTY',
                 ngon_method='BEAUTY'
             )
         except Exception as e:
@@ -620,6 +577,67 @@ class MESH_OT_select_faces_from_edges(bpy.types.Operator):
         
         return {'FINISHED'}
 
+class TMM_Properties(bpy.types.PropertyGroup):
+    
+    cut_through: bpy.props.BoolProperty(default=False)
+
+
+class MESH_OT_project_cut(bpy.types.Operator):
+    """Project Cut"""
+    bl_idname = "mesh.project_cut"
+    bl_label = "Edge Knife"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.active_object is not None and 
+                context.active_object.type == 'MESH' and
+                context.mode == 'EDIT_MESH')
+
+    def execute(self, context):
+        scene = context.scene
+        tmm_props = scene.tmm_properties
+        original_obj = context.active_object
+
+        bpy.ops.object.mode_set(mode='EDIT')
+        bm = bmesh.from_edit_mesh(original_obj.data)
+        selected_edges = [e for e in bm.edges if e.select]
+
+        if len(selected_edges) == 0:
+            self.report({'WARNING'}, "No edges selected. Please select at least one edge.")
+            return {'CANCELLED'}        
+        
+        # Separate selected geometry
+        try:
+            bpy.ops.mesh.separate(type='SELECTED')
+        except:
+            return {'FINISHED'}
+      
+        # Find the newly separated object (selected but not active)
+        separated_obj = None
+        for obj in context.selected_objects:
+            if obj != original_obj:
+                separated_obj = obj
+                separated_obj.modifiers.clear()
+                break
+        try:
+            if tmm_props.cut_through:               
+                bpy.ops.mesh.knife_project(cut_through=True)
+            else:
+                bpy.ops.mesh.knife_project()
+        except:
+            return {'FINISHED'}
+        bpy.ops.mesh.mark_sharp()
+        bpy.ops.mesh.triangulate_preserve_selection()
+
+        # Delete the separated object
+        if separated_obj:
+            mesh_data = separated_obj.data
+            bpy.data.objects.remove(separated_obj, do_unlink=True)
+            bpy.data.meshes.remove(mesh_data)
+
+        return {'FINISHED'}
+
 class MESH_OT_dissolve_triangulate(bpy.types.Operator):
     """Simplify"""
     bl_idname = "mesh.dissolve_triangulate"
@@ -808,34 +826,54 @@ class TriangleModelling(bpy.types.Panel):
         layout = self.layout
 
         scene = context.scene
-
-        row = layout.box()
+        tmm_props = scene.tmm_properties
+        box = layout.box()
+        row = box.row()
         row.operator("mesh.smart_edit_operation", text="Multitool", icon='SCULPTMODE_HLT')
 
-        row2 = row.row()
-        row2.operator("mesh.edge_rotate", text="Turn Edge", icon='MOD_SIMPLIFY').use_ccw=False
-
-        row = layout.box()
+        row = box.row()
         row.operator("mesh.dissolve_triangulate", text="Simplify", icon='MOD_DECIM')
 
-        # row2 = row.row()
-        # row2.operator("mesh.tris_to_quads_subdivide_super", text="Loopcut (Active Edge)", icon='UV_EDGESEL').use_3d_cursor = False
+        # row = box.row()
+        # row.operator("mesh.tris_to_quads_subdivide_super", text="Loopcut (Active Edge)", icon='UV_EDGESEL').use_3d_cursor = False
       
-        row2 = row.row()
-        row2.operator("mesh.tris_to_quads_subdivide_super", text="Loopcut (at 3D Cursor)", icon='UV_EDGESEL').use_3d_cursor = True
+        row = box.row()
+        row.operator("mesh.tris_to_quads_subdivide_super", text="Loopcut (at 3D Cursor)", icon='UV_EDGESEL').use_3d_cursor = True
 
-        row = layout.box()
-        row.operator("transform.vert_slide", text="Slide", icon='MOD_HUE_SATURATION')
+        row = box.row()
+        split = row.split(factor=0.6)  # 60% / 40% split
+        left = split.column()
+        right = split.column()
 
-        row2 = row.row()
-        row2.operator("mesh.vertices_smooth", text="Smooth", icon='MOD_FLUIDSIM').factor=0.5
+        left.operator("mesh.project_cut", text="Edge Project", icon='MOD_BOOLEAN')
+
+        if context.active_object is not None and context.active_object.type == 'MESH' and context.mode == 'EDIT_MESH':
+            right.enabled = True
+            right.prop(tmm_props, "cut_through", text="Through")
+        else:
+            right.enabled = False
+            right.prop(tmm_props, "cut_through", text="Through")
 
         box = layout.box()
         row = box.row()
-        row.operator("mesh.shortest_path_select", text="Select Shortest Path", icon='CON_TRACKTO').edge_mode='SELECT'
+        row.operator("mesh.edge_rotate", text="Turn Edge", icon='MOD_SIMPLIFY').use_ccw=False
 
         row = box.row()
-        row.operator("mesh.select_more", text="Expand Selection", icon='FULLSCREEN_ENTER')
+        row.operator("mesh.beautify_fill", text="Rearrange", icon='EMPTY_AXIS').angle_limit=3.14159
+
+        row = box.row()
+        row.operator("transform.vert_slide", text="Slide", icon='MOD_HUE_SATURATION')
+
+        # row = box.row()
+        # row.operator("mesh.vertices_smooth", text="Smooth", icon='MOD_FLUIDSIM').factor=0.5
+
+
+        box = layout.box()
+        # row = box.row()
+        # row.operator("mesh.shortest_path_select", text="Select Shortest Path", icon='CON_TRACKTO').edge_mode='SELECT'
+
+        # row = box.row()
+        # row.operator("mesh.select_more", text="Expand Selection", icon='FULLSCREEN_ENTER')
 
         row = box.row()
         row.operator("mesh.select_faces_from_edges", text="Select Faces of Edge", icon='MOD_BEVEL')
@@ -860,17 +898,21 @@ MESH_OT_dissolve_triangulate,
 MESH_OT_select_faces_from_edges,
 MESH_OT_triangulate_preserve_selection,
 MESH_OT_smart_subdivide_or_poke_or_rotate,
-MESH_OT_keep_connected_vertex_chain
+MESH_OT_keep_connected_vertex_chain,
+MESH_OT_project_cut,
+TMM_Properties
 
 ]
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.Scene.tmm_properties = bpy.props.PointerProperty(type=TMM_Properties)
 
 def unregister():
     for cls in classes:
         bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.tmm_properties
 
 if __name__ == "__main__":
     register()
